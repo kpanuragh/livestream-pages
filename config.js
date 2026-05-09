@@ -44,6 +44,8 @@ const THURSDAY_MEETING_URL =
 const FRIDAY_MEETING_URL =
   "https://us06web.zoom.us/j/83802209294?pwd=O17vytsA1UbZkX3hfvNXrNWIARDRtZ.1";
 
+const TEMP_URL = "https://phase2.zoom.us/j/9453992250?omn=93624812822";
+
 /*
   Determine current day in America/Toronto timezone
 */
@@ -82,6 +84,8 @@ const MEETING_URL = (() => {
 
   if (day === 4) return THURSDAY_MEETING_URL;
   if (day === 5) return FRIDAY_MEETING_URL;
+
+  return TEMP_URL; 
 
   return "";
 })();
