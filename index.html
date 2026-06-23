@@ -75,12 +75,14 @@ body {
 }
 
 .video {
+  position: relative;
   aspect-ratio: 16 / 9;
   background: black;
   min-width: 0;
 }
 
 .video iframe,
+.video #ytplayer,
 .chat iframe {
   width: 100%;
   height: 100%;
@@ -88,10 +90,60 @@ body {
 }
 
 .chat {
+  position: relative;
   height: 700px;
   min-width: 360px;
   background: white;
   overflow: hidden;
+}
+
+/* Branded fallback shown when no stream / chat is live */
+.status-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+  padding: 28px;
+  background: var(--agentics-bg-secondary);
+  color: var(--agentics-text);
+}
+
+.status-overlay.show {
+  display: flex;
+}
+
+.status-overlay img {
+  height: 48px;
+  opacity: 0.9;
+}
+
+.status-overlay h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.status-overlay p {
+  margin: 0;
+  max-width: 460px;
+  color: var(--agentics-muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.status-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.chat .status-overlay {
+  background: var(--agentics-bg);
 }
 
 .footer {
@@ -192,18 +244,43 @@ body {
 
   <div class="grid">
     <div class="video agentics-card">
-      <iframe id="ytplayer"
-              allow="autoplay; encrypted-media"
-              allowfullscreen></iframe>
+      <div id="ytplayer"></div>
+
+      <div id="streamStatus" class="status-overlay">
+        <img id="streamStatusLogo" alt="">
+        <h2 id="streamStatusTitle">The stream isn't live right now</h2>
+        <p id="streamStatusText">
+          There's no broadcast playing at the moment. Check the schedule or
+          join the meeting below — the player will start automatically once we go live.
+        </p>
+        <div class="status-actions">
+          <a id="streamStatusYt"
+             class="agentics-pill agentics-pill-accent"
+             target="_blank"
+             rel="noopener noreferrer">
+            Watch on YouTube
+          </a>
+          <a id="streamStatusMeeting"
+             class="agentics-pill"
+             target="_blank"
+             rel="noopener noreferrer">
+            View Calendar
+          </a>
+        </div>
+      </div>
     </div>
 
     <div class="chat agentics-card">
-      <iframe id="ytchat"></iframe>
+      <iframe id="ytchat" style="display:none"></iframe>
+
+      <div id="chatStatus" class="status-overlay show">
+        <p>Live chat will appear here once the stream is live.</p>
+      </div>
     </div>
   </div>
 
   <div class="footer">
-    Video ID: <span id="videoid"></span>
+    <span id="videoid"></span>
   </div>
 
 </div>
@@ -216,40 +293,121 @@ document.getElementById("brandStylesheet").href =
   `${BRAND_BASE_URL}/agentics-brand.css`;
 
 document.getElementById("brandFavicon").href =
-  `${BRAND_BASE_URL}/favicon.ico`;
+  `${BRAND_BASE_URL}/logo.png`;
 
 document.getElementById("logo").src =
-  `${BRAND_BASE_URL}/favicon.ico`;
+  `${BRAND_BASE_URL}/logo.png`;
 
 /* =====================================================
-   Video setup
+   Static links + branding
    ===================================================== */
-document.getElementById("ytplayer").src =
-  `https://www.youtube.com/embed/live_stream?channel=${YOUTUBE_CHANNEL_ID}&autoplay=1&mute=1`;
+const CHANNEL_LIVE_URL = `https://www.youtube.com/channel/${YOUTUBE_CHANNEL_ID}/live`;
+const CALENDAR_URL = "https://agentics.org/community/calendar";
 
-document.getElementById("ytlink").href =
-  `https://www.youtube.com/channel/${YOUTUBE_CHANNEL_ID}/live`;
-
-document.getElementById("videoid").textContent =
-  `Channel live: ${YOUTUBE_CHANNEL_ID}`;
-
-document.getElementById("ytchat").src =
-  `https://www.youtube.com/live_chat?channel=${YOUTUBE_CHANNEL_ID}&embed_domain=${location.hostname}`;   
+document.getElementById("ytlink").href = CHANNEL_LIVE_URL;
+document.getElementById("videoid").textContent = `Channel: ${YOUTUBE_CHANNEL_ID}`;
+document.getElementById("streamStatusLogo").src = `${BRAND_BASE_URL}/logo.png`;
+document.getElementById("streamStatusYt").href = CHANNEL_LIVE_URL;
 
 /* =====================================================
-   Meeting button logic
+   Meeting button logic (header + offline overlay)
    ===================================================== */
+const meetingTarget = MEETING_URL || CALENDAR_URL;
+const meetingLabel = MEETING_URL ? "Join Meeting" : "View Calendar";
+
 const btn = document.getElementById("meetingButton");
+btn.href = meetingTarget;
+btn.textContent = meetingLabel;
+btn.style.display = "inline-flex";
 
-if (MEETING_URL) {
-  btn.href = MEETING_URL;
-  btn.textContent = "Join Meeting";
-  btn.style.display = "inline-flex";
-} else {
-  btn.href = "https://agentics.org/community/calendar";
-  btn.textContent = "View Calendar";
-  btn.style.display = "inline-flex";
+const overlayMeeting = document.getElementById("streamStatusMeeting");
+overlayMeeting.href = meetingTarget;
+overlayMeeting.textContent = meetingLabel;
+
+/* =====================================================
+   Video player + "stream unavailable" detection
+
+   The channel live_stream embed is loaded through the
+   YouTube IFrame Player API so we can react to its state:
+     - reaches PLAYING/BUFFERING   -> a stream is live
+     - fires onError, or never      -> nothing is live, so
+       plays within a timeout          we show a branded message
+   The live chat is only loaded once a stream is confirmed
+   live, which avoids YouTube's "Something went wrong" panel.
+   ===================================================== */
+const STREAM_WAIT_MS = 10000;
+let player;
+let liveConfirmed = false;
+let chatLoaded = false;
+
+const streamStatus = document.getElementById("streamStatus");
+const chatStatus = document.getElementById("chatStatus");
+const chatFrame = document.getElementById("ytchat");
+
+function showStreamOffline() {
+  if (liveConfirmed) return;
+  streamStatus.classList.add("show");
 }
+
+function loadChat() {
+  if (chatLoaded) return;
+  chatLoaded = true;
+  chatFrame.src =
+    `https://www.youtube.com/live_chat?channel=${YOUTUBE_CHANNEL_ID}&embed_domain=${location.hostname}`;
+  chatFrame.style.display = "block";
+  chatStatus.classList.remove("show");
+}
+
+function confirmLive() {
+  liveConfirmed = true;
+  streamStatus.classList.remove("show");
+  loadChat();
+}
+
+// Inject the player iframe (needs enablejsapi so the API can attach).
+const frame = document.createElement("iframe");
+frame.id = "ytframe";
+frame.allow = "autoplay; encrypted-media";
+frame.allowFullscreen = true;
+frame.src =
+  `https://www.youtube.com/embed/live_stream?channel=${YOUTUBE_CHANNEL_ID}` +
+  `&autoplay=1&mute=1&enablejsapi=1&origin=${encodeURIComponent(location.origin)}`;
+document.getElementById("ytplayer").appendChild(frame);
+
+// Load the IFrame Player API; onYouTubeIframeAPIReady is its callback.
+const apiTag = document.createElement("script");
+apiTag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(apiTag);
+
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player("ytframe", {
+    events: {
+      onStateChange: (e) => {
+        if (
+          e.data === YT.PlayerState.PLAYING ||
+          e.data === YT.PlayerState.BUFFERING
+        ) {
+          confirmLive();
+        }
+      },
+      onError: showStreamOffline
+    }
+  });
+}
+
+// Safety net: if nothing is playing after the wait, assume offline.
+// (YT.PlayerState.PLAYING === 1, BUFFERING === 3 — used numerically so
+//  this is safe even if the API script is slow to load.)
+setTimeout(() => {
+  if (liveConfirmed) return;
+  const state =
+    player && player.getPlayerState ? player.getPlayerState() : null;
+  if (state === 1 || state === 3) {
+    confirmLive();
+  } else {
+    showStreamOffline();
+  }
+}, STREAM_WAIT_MS);
 </script>
 
 </body>
